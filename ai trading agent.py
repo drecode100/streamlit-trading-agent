@@ -14,6 +14,7 @@ st.title("📊 AI Trading Assistant - Excel & Chart Image Analyzer")
 st.markdown("---")
 
 # --- Global Variables for ML Model ---
+# These are initialized outside any function, making them truly global.
 ml_model = None
 ml_features = None
 ml_target = None
@@ -61,10 +62,11 @@ if uploaded_excel:
                 df.dropna(subset=['Time'], inplace=True) # Drop rows where time conversion failed
 
                 if not df.empty:
+                    # Corrected placement for global declaration
+                    global best_hour 
                     df['Hour'] = df['Time'].dt.hour
                     hour_win_rate = df.groupby('Hour')['Profit'].apply(lambda x: (x > 0).mean())
-                    global best_hour # Declare global to modify the global variable
-                    best_hour = hour_win_rate.idxmax()
+                    best_hour = hour_win_rate.idxmax() # Assignment now correctly modifies the global variable
                     st.success(f"✅ **Suggested Best Hour to Trade:** {best_hour}:00 with {round(hour_win_rate.max() * 100, 1)}% win rate")
                 else:
                     st.warning("No valid 'Time' data found after parsing.")
@@ -107,6 +109,7 @@ if uploaded_excel:
             
             if not existing_features:
                 st.error("No suitable features found in Excel data to train the ML model. Please ensure 'Time', 'Profit', or 'Volume' columns are present.")
+                global ml_model # Ensure this is reset globally
                 ml_model = None
             else:
                 X = ml_df[existing_features]
@@ -114,29 +117,42 @@ if uploaded_excel:
 
                 # Handle potential NaNs introduced by feature engineering
                 # For simplicity, we drop rows with NaNs. In a real scenario, consider imputation.
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+                # Ensure X and y have matching indices after dropping NaNs
+                combined_xy = pd.concat([X, y], axis=1).dropna()
+                X_clean = combined_xy[existing_features]
+                y_clean = combined_xy['Is_Win']
 
-                # Train the Random Forest Classifier
-                # Using class_weight='balanced' helps with imbalanced datasets
-                model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
-                model.fit(X_train, y_train)
-                ml_model = model # Store model globally
-                ml_features = existing_features # Store features globally
-                ml_target = y.name # Store target name
+                if X_clean.empty or len(X_clean) < 2: # Need at least 2 samples for split
+                    st.warning("Not enough clean data to train the prediction model after feature engineering and NaN removal.")
+                    global ml_model
+                    ml_model = None
+                else:
+                    X_train, X_test, y_train, y_test = train_test_split(X_clean, y_clean, test_size=0.3, random_state=42, stratify=y_clean)
 
-                st.write("Random Forest Model Trained Successfully!")
-                y_pred = model.predict(X_test)
-                accuracy = accuracy_score(y_test, y_pred)
-                st.write(f"**Model Accuracy (Win/Loss Prediction):** {round(accuracy * 100, 2)}%")
-                st.text("Classification Report:")
-                st.code(classification_report(y_test, y_pred, target_names=['Loss', 'Win']))
+                    # Train the Random Forest Classifier
+                    # Using class_weight='balanced' helps with imbalanced datasets
+                    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+                    model.fit(X_train, y_train)
+                    global ml_model, ml_features, ml_target # Declare global to modify
+                    ml_model = model # Store model globally
+                    ml_features = existing_features # Store features globally
+                    ml_target = y_clean.name # Store target name
+
+                    st.write("Random Forest Model Trained Successfully!")
+                    y_pred = model.predict(X_test)
+                    accuracy = accuracy_score(y_test, y_pred)
+                    st.write(f"**Model Accuracy (Win/Loss Prediction):** {round(accuracy * 100, 2)}%")
+                    st.text("Classification Report:")
+                    st.code(classification_report(y_test, y_pred, target_names=['Loss', 'Win']))
 
         else:
             st.warning("Please ensure your Excel file contains 'Profit' and 'Symbol' columns for analysis.")
-            ml_model = None # Reset model if columns are missing
+            global ml_model # Ensure this is reset globally
+            ml_model = None
     except Exception as e:
         st.error(f"Error processing Excel file: {e}")
-        ml_model = None # Reset model on error
+        global ml_model
+        ml_model = None
 
 st.markdown("---")
 
@@ -159,15 +175,15 @@ if uploaded_img:
 
         # A very rudimentary "image feature" for ML: proportion of edges
         # In a real scenario, this would be features from a CNN or more complex CV
+        global chart_feature_value # Corrected placement for global declaration
         total_pixels = edges.shape[0] * edges.shape[1]
         edge_pixels = np.sum(edges > 0)
-        global chart_feature_value # Declare global to modify the global variable
-        chart_feature_value = edge_pixels / total_pixels
+        chart_feature_value = edge_pixels / total_pixels # Assignment now correctly modifies the global variable
         st.info(f"**Calculated Chart Edge Density (as a simple feature):** {round(chart_feature_value * 100, 2)}%")
         st.warning("⚠️ **Note:** For true chart pattern recognition (e.g., Head & Shoulders, Flags), you would need to train a specialized Convolutional Neural Network (CNN) model. This 'edge density' is a very basic placeholder feature.")
     except Exception as e:
         st.error(f"Error processing image: {e}")
-        global chart_feature_value # Declare global to modify the global variable
+        global chart_feature_value
         chart_feature_value = 0.0 # Reset on error
 
 st.markdown("---")
@@ -187,7 +203,7 @@ if ml_model and ml_features:
     # Dynamically ask for inputs based on features used by the model
     for feature in ml_features:
         if feature == 'Hour':
-            input_data['Hour'] = st.slider("Current Trading Hour (0-23)", 0, 23, 9)
+            input_data['Hour'] = st.slider("Current Trading Hour (0-23)", 0, 23, 9, key="current_hour_input")
         elif feature == 'Log_Volume':
             # Ask for actual volume, then convert to log
             current_volume = st.number_input("Current Trade Volume", value=1000.0, min_value=0.0, key="current_volume_input")
@@ -196,10 +212,8 @@ if ml_model and ml_features:
             input_data['Prev_Trade_Win'] = st.selectbox("Was the Previous Trade a Win?", [0, 1], format_func=lambda x: "Yes" if x == 1 else "No", key="prev_trade_win_input")
         elif feature == 'Rolling_Avg_Profit':
             input_data['Rolling_Avg_Profit'] = st.number_input("Average Profit of Last 5 Trades", value=50.0, step=10.0, key="rolling_avg_profit_input")
-        # We need to include the image-derived feature here if it's part of the model's training
-        # For this example, let's assume it's an additional feature we *can* provide
-        # If your actual ML model doesn't use it, you'd remove this.
-        # For simplicity, we'll just show it here as a contributing factor, not necessarily an ML feature in *this* model.
+        # The chart_feature_value is currently only displayed as a factor, not directly fed into *this specific* ML model as a feature.
+        # If you add it to ml_features, ensure it's captured here too.
 
 
     # Create a DataFrame for prediction
@@ -233,7 +247,7 @@ if ml_model and ml_features:
         st.write("*(This signal is based on your historical data and a simplified chart analysis. Always conduct your own research.)*")
 
     except Exception as e:
-        st.error(f"Could not generate prediction. Ensure all required features for the model are available. Error: {e}")
+        st.error(f"Could not generate prediction. Ensure all required features for the model are available and valid input. Error: {e}")
         st.info(f"Model expected features: {ml_features}")
 else:
     st.info("Upload Excel data and train the model in step 2 to enable AI predictions.")
@@ -253,16 +267,19 @@ if ml_model and ml_features:
         # Initialize signal to avoid NameError if not set in previous block
         signal = "N/A" 
         try:
-            if ml_model and ml_features and 'predict_df' in locals(): # Check if prediction was successful
-                win_proba = ml_model.predict_proba(predict_df)[:, 1][0]
-                prediction = ml_model.predict(predict_df)[0]
-                if prediction == 1 and win_proba > 0.65: 
+            # Re-run prediction here to ensure 'signal' is up-to-date based on inputs
+            # This is a bit redundant with Section 3, but ensures the buttons respond correctly
+            if 'predict_df' in locals() and not predict_df.empty:
+                win_proba_for_action = ml_model.predict_proba(predict_df)[:, 1][0]
+                prediction_for_action = ml_model.predict(predict_df)[0]
+                if prediction_for_action == 1 and win_proba_for_action > 0.65: 
                     signal = "🟢 Consider BUY/LONG"
-                elif prediction == 0 and win_proba < 0.35:
+                elif prediction_for_action == 0 and win_proba_for_action < 0.35:
                     signal = "🔴 Consider SELL/SHORT or AVOID"
                 else:
                     signal = "⚪ HOLD / Neutral"
-        except:
+        except Exception as e:
+            st.error(f"Error determining signal for simulated actions: {e}")
             signal = "N/A" # Fallback if prediction fails
 
         if st.button("Simulate BUY Order based on Signal"):
